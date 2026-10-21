@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentic QA Review</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --text:#1c2024; --muted:#6b7280; --line:#e2e5ea; --accent:#2563eb;
+          --ok:#15803d; --warn:#b45309; --bad:#b91c1c; --code:#f1f3f6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --panel:#1c1f25; --text:#e6e8eb; --muted:#9aa3af; --line:#2c313a; --accent:#60a5fa;
+            --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --code:#12141a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; gap:24px; align-items:center; padding:12px 20px; background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  .stat { color:var(--muted); } .stat b { color:var(--text); }
+  main { display:grid; grid-template-columns:320px 1fr; height:calc(100vh - 49px); }
+  @media (max-width:800px) { main { grid-template-columns:1fr; height:auto; } }
+  aside { border-right:1px solid var(--line); overflow:auto; background:var(--panel); }
+  .tabs { display:flex; border-bottom:1px solid var(--line); }
+  .tabs button { flex:1; padding:10px 4px; border:0; background:none; color:var(--muted); cursor:pointer; font:inherit; border-bottom:2px solid transparent; }
+  .tabs button.on { color:var(--text); border-bottom-color:var(--accent); }
+  .item { padding:10px 14px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .item:hover, .item.on { background:var(--bg); }
+  .item .id { font-weight:600; word-break:break-all; } .item .sub { color:var(--muted); font-size:12px; }
+  section { overflow:auto; padding:20px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:18px 0 6px; }
+  pre, textarea { width:100%; background:var(--code); border:1px solid var(--line); border-radius:6px; padding:10px;
+                  font:12.5px/1.5 ui-monospace, Menlo, monospace; color:var(--text); margin:0; overflow:auto; }
+  textarea { min-height:340px; resize:vertical; }
+  .bar { display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; align-items:center; }
+  button.act { padding:8px 16px; border-radius:6px; border:1px solid var(--line); background:var(--panel); color:var(--text); cursor:pointer; font:inherit; font-weight:600; }
+  button.act:disabled { opacity:.5; cursor:default; }
+  .approve { border-color:var(--ok)!important; color:var(--ok)!important; }
+  .modify { border-color:var(--warn)!important; color:var(--warn)!important; }
+  .reject { border-color:var(--bad)!important; color:var(--bad)!important; }
+  select, input[type=text] { padding:7px; border-radius:6px; border:1px solid var(--line); background:var(--panel); color:var(--text); font:inherit; }
+  .msg { margin-left:8px; } .msg.err { color:var(--bad); } .msg.ok { color:var(--ok); }
+  .empty { color:var(--muted); padding:30px; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agentic QA Review</h1>
+  <span class="stat">Approval rate <b id="s-rate">–</b></span>
+  <span class="stat">Pending <b id="s-pending">0</b></span>
+  <span class="stat">Approved <b id="s-approved">0</b></span>
+  <span class="stat">Modified <b id="s-modified">0</b></span>
+  <span class="stat">Rejected <b id="s-rejected">0</b></span>
+</header>
+<main>
+  <aside>
+    <div class="tabs" id="tabs"></div>
+    <div id="list"></div>
+  </aside>
+  <section id="detail"><div class="empty">Select a test to review.</div></section>
+</main>
+<script>
+const STATUSES = ["pending", "approved", "modified", "rejected"];
+let status = "pending", current = null;
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  kids.forEach((k) => n.append(k));
+  return n;
+};
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+
+async function loadStats() {
+  const s = await api("/api/stats");
+  for (const k of STATUSES) $("s-" + k).textContent = s["tests_" + k] || 0;
+  $("s-rate").textContent = s.approval_rate === undefined ? "–" : Math.round(s.approval_rate * 100) + "%";
+}
+
+function renderTabs() {
+  $("tabs").replaceChildren(...STATUSES.map((s) => {
+    const b = el("button", { textContent: s, className: s === status ? "on" : "" });
+    b.onclick = () => { status = s; current = null; $("detail").replaceChildren(el("div", { className: "empty", textContent: "Select a test to review." })); refresh(); };
+    return b;
+  }));
+}
+
+async function loadList() {
+  const tests = await api("/api/tests?status=" + status);
+  if (!tests.length) { $("list").replaceChildren(el("div", { className: "empty", textContent: "Nothing " + status })); return; }
+  $("list").replaceChildren(...tests.map((t) => {
+    const d = el("div", { className: "item" + (t.id === current ? " on" : "") },
+      el("div", { className: "id", textContent: t.id }),
+      el("div", { className: "sub", textContent: (t.explanation || "") + " · " + t.created_at.slice(0, 16).replace("T", " ") }));
+    d.onclick = () => openTest(t.id);
+    return d;
+  }));
+}
+
+async function openTest(id) {
+  current = id;
+  const t = await api("/api/tests/" + encodeURIComponent(id));
+  const reviewable = t.status === "pending";
+  const ta = el("textarea", { value: t.generated_test, readOnly: !reviewable, spellcheck: false });
+  const reason = el("select", {}, ...["", "missing_edge_case", "wrong_assertion", "not_runnable", "too_verbose", "other"]
+    .map((v) => el("option", { value: v, textContent: v || "reason (for reject / modify)" })));
+  const comment = el("input", { type: "text", placeholder: "comment (optional)", size: 28 });
+  const msg = el("span", { className: "msg" });
+  const send = async (action) => {
+    msg.className = "msg"; msg.textContent = "";
+    try {
+      await api("/api/tests/" + encodeURIComponent(id) + "/feedback", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, corrected_code: action === "modify" ? ta.value : null,
+                               reason_tag: reason.value || null, comments: comment.value }),
+      });
+      current = null; await refresh();
+      $("detail").replaceChildren(el("div", { className: "empty", textContent: "Saved: " + action }));
+    } catch (e) { msg.className = "msg err"; msg.textContent = e.message; }
+  };
+  const mk = (cls, label, action) => { const b = el("button", { className: "act " + cls, textContent: label }); b.onclick = () => send(action); return b; };
+  const bar = reviewable
+    ? el("div", { className: "bar" }, mk("approve", "Approve as is", "approve"),
+        mk("modify", "Save my edits", "modify"), mk("reject", "Reject", "reject"), reason, comment, msg)
+    : el("div", { className: "bar" }, el("span", { className: "stat", textContent: "Status: " + t.status }));
+  const history = (t.feedback || []).map((f) =>
+    el("div", { className: "stat", textContent: `${f.action} by ${f.engineer_id}` + (f.reason_tag ? ` (${f.reason_tag})` : "") + (f.comments ? ` – ${f.comments}` : "") }));
+  $("detail").replaceChildren(
+    el("h2", { textContent: t.id + " · " + (t.explanation || "") }),
+    el("h2", { textContent: "Function under test" }), el("pre", { textContent: t.function_code }),
+    el("h2", { textContent: reviewable ? "Generated test (editable)" : "Generated test" }), ta, bar, ...history);
+  loadList();
+}
+
+async function refresh() { renderTabs(); await Promise.all([loadStats(), loadList()]); }
+refresh();
+</script>
+</body>
+</html>
